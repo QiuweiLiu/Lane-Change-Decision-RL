@@ -73,7 +73,7 @@ class PPOActorCritic(nn.Module):
 
 
 class PPOAgent:
-    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2,
+    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.98, eps_clip=0.2,
                  entropy_coef=0.01, use_attention=False, attn_dims=None):
         self.use_attention = use_attention
         self.model = PPOActorCritic(state_dim, action_dim, use_attention=use_attention, attn_dims=attn_dims)
@@ -138,25 +138,22 @@ class PPOAgent:
                 loss.backward()
                 self.optimizer.step()
 
-    def apply_her(self, memory, trajectory, env, alpha=0.3):
-        """使用动态最佳状态作为HER目标"""
-        if self.best_reward_state is not None:
-            goal_state = self.best_reward_state  # 使用最佳状态作为目标
-            goal_pos = goal_state[:2]  # 目标位置
-
-            new_rewards = []
-            for (state, action, old_reward, next_state, done) in trajectory:
-                distance = np.linalg.norm(state[:2] - goal_pos)
-                her_reward = 1.0 if distance < 5.0 else 0.0
-                fused_reward = old_reward + alpha * her_reward
-                new_rewards.append(fused_reward)
-
-            memory['rewards'] = new_rewards
-
-        return memory
 
 
-def compute_gae(rewards, masks, values, gamma=0.99, lam=0.95):
+    def save(self, path):
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }, path)
+
+    def load(self, path):
+        checkpoint = torch.load(path)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.model.eval()
+
+
+def compute_gae(rewards, masks, values, gamma=0.98, lam=0.90):
     """
     计算Generalized Advantage Estimation (GAE)
 
@@ -207,10 +204,10 @@ def train_ppo(env, agent, max_episodes=300, max_steps=5000, use_her=False, use_d
     lane_success_count = 0
 
     for episode in range(max_episodes):
-        decay_lr = max(1e-4, 3e-4 * (1 - episode / max_episodes))
+        decay_lr =  max(2e-4, 5e-4 * (1 - episode / max_episodes))
         agent.optimizer.param_groups[0]['lr'] = decay_lr
-        agent.entropy_coef = max(0.003, 0.01 * (1 - episode / max_episodes))
-        agent.eps_clip = 0.15
+        agent.entropy_coef = max(0.005, 0.02 * (1 - episode / max_episodes))  # 更高初始熵权重
+        agent.eps_clip = 0.2
 
         state = env.reset()
         memory = {
@@ -295,5 +292,49 @@ def train_ppo(env, agent, max_episodes=300, max_steps=5000, use_her=False, use_d
     plt.grid()
     plt.savefig("reward_curve.png")
     plt.close()
+
+    # ==== ⏬保存统计结果、奖励CSV、热图（可选） ====
+
+    # 1. 保存 summary.txt
+    # 在 f-string 之前先计算换道成功率字符串
+    if lane_attempt_count > 0:
+        lane_success_rate_str = f"{lane_success_count / lane_attempt_count:.2%}"
+    else:
+        lane_success_rate_str = "0.00%"
+
+    summary = f"""🚗 训练总结（PPO模型）
+    -------------------------
+    总回合数         : {max_episodes}
+    总碰撞次数       : {collision_count}
+    碰撞率           : {collision_count / max_episodes:.2%}
+
+    换道尝试次数     : {lane_attempt_count}
+    换道成功次数     : {lane_success_count}
+    换道成功率       : {lane_success_rate_str}
+
+    平均速度         : {total_speed_all / speed_count_all:.2f} m/s
+    平均每回合奖励   : {np.mean(reward_curve):.2f}"""
+
+    with open("training_summary.txt", "w", encoding="utf-8") as f:
+        f.write(summary.strip())
+
+    # 2. 保存每回合奖励为 CSV
+    reward_df = pd.DataFrame({
+        "episode": list(range(1, len(reward_curve) + 1)),
+        "reward": reward_curve
+    })
+    reward_df.to_csv("episode_rewards.csv", index=False)
+
+    # 3. 若启用注意力机制，则保存注意力热图（模拟值）
+    if agent.use_attention:
+        attn_matrix = np.random.rand(env.attn_dims["veh_count"], env.attn_dims["veh_dim"])
+        plt.figure(figsize=(10, 4))
+        sns.heatmap(attn_matrix, cmap="YlOrBr", annot=True)
+        plt.title("Attention Heatmap (示意)")
+        plt.xlabel("Feature Index")
+        plt.ylabel("Opponent Vehicle")
+        plt.tight_layout()
+        plt.savefig("attention_heatmap.png")
+        plt.close()
 
     return agent

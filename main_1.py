@@ -10,6 +10,7 @@ if __name__ == "__main__":
     use_her = input("是否启用 HER 机制？(y/n): ").lower() == 'y'
     use_attention = input("是否启用 注意力机制？(y/n): ").lower() == 'y'
     use_dlc_input = input("是否使用神经网络输出作为状态输入？(y/n): ").lower() == 'y'
+    use_camera = input("是否开启摄像头显示？(y/n): ").lower() == 'y'
 
     config = {'host': 'localhost', 'port': 2000}
     logger = logging.getLogger("TRAIN")
@@ -21,7 +22,8 @@ if __name__ == "__main__":
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    env = ENV(config, logger, use_dlc_input=use_dlc_input)
+    env = ENV(config, logger, use_dlc_input=use_dlc_input, use_camera=use_camera)
+
 
     agent = PPOAgent(
         state_dim=env.observation_space.shape[0],
@@ -30,7 +32,7 @@ if __name__ == "__main__":
         attn_dims=env.attn_dims
     )
 
-    train_ppo(env, agent, max_episodes=300, max_steps=2000, use_her=use_her, use_dlc_input=use_dlc_input)
+    train_ppo(env, agent, max_episodes=150, max_steps=1000, use_her=use_her, use_dlc_input=use_dlc_input)
     # 保存归一化参数
     env.normalizer.save("obs_normalizer.npz")
 

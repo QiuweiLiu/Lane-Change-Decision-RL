@@ -48,6 +48,23 @@ import cv2
 import time
 from scipy.spatial import KDTree
 from threading import Lock
+from lane_prob_module import get_lane_prob, TrajectoryBuffer
+
+# === 包装 tool_funcion 中的函数为“buffer-like”对象 ===
+import tool_funcion as tf
+
+from collections import defaultdict
+
+class BufferWrapper:
+    def to_car48(self, maincar, surrounding_cars):
+        return tf.to_car48(maincar, surrounding_cars)
+
+    def to_dlc_vector(self, maincar, surrounding_cars):
+        return tf.to_dlc_vector(maincar, surrounding_cars)
+
+
+
+
 
 CENTER_LANE = 1
 VEHICLE_VEL = 45
@@ -77,11 +94,10 @@ class CustomFormatter(logging.Formatter):
 
 
 class ENV:
-    def _get_lane_change_probs(self):
-        # 🚧 占位神经网络输出，未来替换为模型预测
-        return np.array([0.3, 0.4, 0.3], dtype=np.float32)
-    def __init__(self, config, logger,use_dlc_input=False):
+
+    def __init__(self, config, logger,use_dlc_input=False,use_camera=False):
         self.use_dlc_input = use_dlc_input
+        self.use_camera = use_camera
         try:
             self.client = carla.Client(config['host'], config['port'])
             self.client.get_server_version()  # 验证连接
@@ -97,7 +113,7 @@ class ENV:
         # 保存环境设置
         self.settings = self.world.get_settings()
         self.settings.synchronous_mode = True
-        self.settings.fixed_delta_seconds = 0.05
+        self.settings.fixed_delta_seconds = 0.04
         self.world.apply_settings(self.settings)
 
         self.logger = logger
@@ -174,6 +190,26 @@ class ENV:
         self.speed_history_ptr = 0
         self.speed_compare_window = 30  # 可以根据需要调整比较窗口大小
 
+
+
+        self.trajectories = defaultdict(lambda: TrajectoryBuffer(max_len=48))
+
+    def _get_lane_change_probs(self):
+        try:
+            maincar = self.cars['maincar']
+            surrounding = [a for a in self.actor_list if a.id != maincar.id]
+
+            # 提取历史轨迹
+            buffer = self.trajectories[maincar.id]
+
+
+            probs = get_lane_prob(maincar, surrounding, buffer, "checkpoint.pth")
+            return probs  # 已经是 numpy 数组，无需再 .cpu().numpy()
+
+
+        except Exception as e:
+            self.logger.warning(f"❌ 神经网络获取概率失败，使用默认：{e}")
+            return np.array([0.3, 0.4, 0.3], dtype=np.float32)
 
     def _get_closest_spawn_point(self, ref_transform):
         spawn_points = self.world.get_map().get_spawn_points()
@@ -330,7 +366,7 @@ class ENV:
         reward = self._GetReward()
         done = self._GetDone()
 
-        if self.camera_image is not None:
+        if self.camera_image is not None and self.use_camera:
             cv2.imshow("Monitor", self.camera_image)
             cv2.waitKey(1)
 
@@ -349,6 +385,10 @@ class ENV:
         if self.speed_history_ptr < len(self.speed_history):
             self.speed_history[self.speed_history_ptr] = speed
             self.speed_history_ptr += 1
+
+        for vehicle in self.actor_list:
+            self.trajectories[vehicle.id].update(vehicle)
+
 
         return obs, reward, done, {}
 
@@ -403,7 +443,7 @@ class ENV:
         self.sensorlist.append(self.collision_sensor)
 
         # === 对抗车辆生成（含多样化行为） ===
-        MAX_OPPONENTS = 600
+        MAX_OPPONENTS = 200
         opponent_count = 0
         main_loc = main_car.get_location()
         for sp in spawn_points:

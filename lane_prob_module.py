@@ -119,5 +119,11 @@ def get_lane_prob(maincar, surrounding_cars, buffer: TrajectoryBuffer, model_pat
         buffer.to_car48(sorted_cars["als_r_car"].id if sorted_cars["als_r_car"] else None)
     )
 
-    prob = dlc_model_output(car_info, model_path).squeeze().cpu().numpy()  # 调用神经网络进行决策
+    result = dlc_model_output(car_info, model_path)
+    if isinstance(result, torch.Tensor):
+        prob = result.squeeze().cpu().numpy()
+    else:
+        prob = result
+
+    # 调用神经网络进行决策
     return prob
